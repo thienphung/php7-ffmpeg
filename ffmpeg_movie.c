@@ -58,7 +58,11 @@
 #include "ffmpeg_frame.h"
 #include "ffmpeg_movie.h"
 #include "ffmpeg_tools.h"
-   
+
+#if LIBAVFORMAT_VERSION_MAJOR >= 53
+#define MAX_STREAMS 20	/* arbitrary sanity check value */
+#endif
+
 #define GET_MOVIE_RESOURCE(ffmovie_ctx) {\
     zend_resource *le;\
 	if ((le = zend_hash_str_find_ptr(Z_OBJPROP_P(getThis()), "ffmpeg_movie", sizeof("ffmpeg_movie")-1)) == NULL) {\
@@ -308,10 +312,10 @@ FFMPEG_PHP_CONSTRUCTOR(ffmpeg_movie, __construct)
 {
 	zval *argv = NULL;
 	int ac = ZEND_NUM_ARGS();
-    int persistent = 0, hashkey_length = 0;
-    char *filename = NULL, *fullpath = NULL, *hashkey = NULL;
+    int persistent = 0;//, hashkey_length = 0;
+    char *filename = NULL, *fullpath = NULL;//, *hashkey = NULL;
     ff_movie_context *ffmovie_ctx = NULL;
-	char *key = NULL, *error = NULL;
+	//char *key = NULL, *error = NULL;
 	int keylen = 0;
 	int i;
 
@@ -570,8 +574,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getComment)
 
     GET_MOVIE_RESOURCE(ffmovie_ctx);
     
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->comment,
-            strlen(ffmovie_ctx->fmt_ctx->comment));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "comment", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "comment", NULL, 0)->value));
 }
 /* }}} */
 
@@ -585,8 +589,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getTitle)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
 
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->title,
-            strlen(ffmovie_ctx->fmt_ctx->title));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "title", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "title", NULL, 0)->value));
 }
 /* }}} */
 
@@ -600,8 +604,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getAuthor)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
 
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->author,
-            strlen(ffmovie_ctx->fmt_ctx->author));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "artist", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "artist", NULL, 0)->value));
 }
 /* }}} */
 
@@ -614,8 +618,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getCopyright)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
 
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->copyright,
-            strlen(ffmovie_ctx->fmt_ctx->copyright));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "copyright", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "copyright", NULL, 0)->value));
 }
 /* }}} */
 
@@ -629,8 +633,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getAlbum)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
 
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->album,
-            strlen(ffmovie_ctx->fmt_ctx->album));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "album", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "album", NULL, 0)->value));
 }
 /* }}} */
 
@@ -643,8 +647,8 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getGenre)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
 
-    RETURN_STRINGL(ffmovie_ctx->fmt_ctx->genre,
-            strlen(ffmovie_ctx->fmt_ctx->genre));
+    RETURN_STRINGL(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "genre", NULL, 0)->value,
+            strlen(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "genre", NULL, 0)->value));
 }
 /* }}} */
 
@@ -658,7 +662,7 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getTrackNumber)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
     
-    RETURN_LONG(ffmovie_ctx->fmt_ctx->track);
+    RETURN_LONG(strtol(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "track", NULL, 0)->value, NULL, 10));
 }
 /* }}} */
 
@@ -671,7 +675,7 @@ FFMPEG_PHP_METHOD(ffmpeg_movie, getYear)
     
     GET_MOVIE_RESOURCE(ffmovie_ctx);
     
-    RETURN_LONG(ffmovie_ctx->fmt_ctx->year);
+    RETURN_LONG(strtol(av_dict_get(ffmovie_ctx->fmt_ctx->metadata, "date", NULL, 0)->value, NULL, 10));
 }
 /* }}} */
 
@@ -1254,8 +1258,7 @@ static AVFrame* _php_read_av_frame(ff_movie_context *ffmovie_ctx,
     while (av_read_frame(ffmovie_ctx->fmt_ctx, &packet) >= 0) {
         if (packet.stream_index == video_stream) {
         
-            avcodec_decode_video(decoder_ctx, frame, &got_frame,
-                    packet.data, packet.size);
+            avcodec_decode_video2(decoder_ctx, frame, &got_frame, &packet);
         
             if (got_frame) {
                 *is_keyframe = (packet.flags & PKT_FLAG_KEY);
@@ -1321,9 +1324,9 @@ static AVFrame* _php_get_av_frame(ff_movie_context *ffmovie_ctx,
                 wanted_frame != GETFRAME_NEXTFRAME &&
                 wanted_frame - ffmovie_ctx->frame_number > 
                 decoder_ctx->gop_size + 1) {
-            decoder_ctx->hurry_up = 1;
+            decoder_ctx->skip_frame = AVDISCARD_NONREF;
         } else {
-            decoder_ctx->hurry_up = 0;
+            decoder_ctx->skip_frame = AVDISCARD_DEFAULT;
         }
         ffmovie_ctx->frame_number++; 
 
